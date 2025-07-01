@@ -1,34 +1,60 @@
-import streamlit as st
 import pandas as pd
-import joblib
-from sklearn.metrics.pairwise import linear_kernel
+from flask import Flask, render_template, request
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics.pairwise import pairwise_distances
 
-# Load data dan model
-df = pd.read_csv("netflix_titles.csv")
-tfidf_vectorizer = joblib.load("tfidf_vectorizer.pkl")
-tfidf_matrix = joblib.load("tfidf_matrix.pkl")
-indices = joblib.load("indices.pkl")
+# Membaca dan memproses data
+file_path = "movie.csv"
+movies_df = pd.read_csv(file_path, encoding="utf-16")
 
-st.title("🎬 Sistem Rekomendasi Film Netflix")
-st.markdown("Masukkan judul film atau serial, lalu sistem akan merekomendasikan konten serupa.")
+# Preprocessing: Mengganti nilai kosong di kolom 'genre' dan 'introduction' dengan string kosong
+movies_df['genre'] = movies_df['genre'].fillna("")
+movies_df['introduction'] = movies_df['introduction'].fillna("")
 
-# Input judul
-title_input = st.text_input("Masukkan judul film / serial:")
+# Membuat kolom 'combined_features' untuk menyimpan gabungan genre dan deskripsi
+movies_df['combined_features'] = movies_df['genre'] + " " + movies_df['introduction']
 
-# Fungsi rekomendasi
-def recommend(title, cosine_sim=tfidf_matrix):
-    if title not in indices:
-        return ["Judul tidak ditemukan dalam database."]
-    
-    idx = indices[title]
-    sim_scores = list(enumerate(linear_kernel(cosine_sim[idx:idx+1], cosine_sim).flatten()))
-    sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)[1:11]
-    movie_indices = [i[0] for i in sim_scores]
-    return df['title'].iloc[movie_indices].tolist()
+# Mengubah teks menjadi representasi numerik menggunakan CountVectorizer
+vectorizer = CountVectorizer(stop_words='english', binary=True)
+features_matrix = vectorizer.fit_transform(movies_df['combined_features'])
 
-# Proses rekomendasi
-if title_input:
-    recommendations = recommend(title_input)
-    st.subheader("Rekomendasi:")
-    for i, rec in enumerate(recommendations, 1):
-        st.write(f"{i}. {rec}")
+# Menghitung Jaccard Similarity (1 - Jaccard Distance)
+similarity_matrix = 1 - pairwise_distances(features_matrix.toarray().astype(bool), metric='jaccard')
+
+# Fungsi untuk mendapatkan rekomendasi berdasarkan judul film
+def get_recommendations(title):
+    try:
+        # Mendapatkan indeks film berdasarkan judul
+        idx = movies_df[movies_df['title'].str.lower() == title.lower()].index[0]
+
+        # Mengambil skor kesamaan untuk film tersebut
+        similarity_scores = similarity_matrix[idx]
+
+        # Mengurutkan skor kesamaan dan memilih 10 film teratas (kecuali film input)
+        similar_indices = similarity_scores.argsort()[::-1][1:11]
+        recommendations = movies_df.iloc[similar_indices]
+        return recommendations
+    except IndexError:
+        return pd.DataFrame()  # Jika judul tidak ditemukan atau terjadi kesalahan
+
+# Membuat aplikasi Flask
+app = Flask(__name__)
+
+@app.route('/')
+def index():
+    # Mengambil daftar judul film unik
+    movie_titles = movies_df['title'].tolist()
+    return render_template('index.html', movies=movie_titles)
+
+@app.route('/recommendations', methods=['POST'])
+def recommendations():
+    movie_title = request.form['movie']
+    recommendations = get_recommendations(movie_title)
+    return render_template(
+        'recommendations.html',
+        movie_title=movie_title,
+        recommendations=recommendations.to_dict(orient='records')
+    )
+
+if __name__ == '__main__':
+    app.run(debug=True)
